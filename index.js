@@ -5,26 +5,50 @@ const express = require("express");
 const cors = require("cors");
 const crypto = require("crypto");
 
-const { initializeApp, cert } = require("firebase-admin/app");
+const { initializeApp, cert, getApps } = require("firebase-admin/app");
 const { getAuth } = require("firebase-admin/auth");
 const { getFirestore } = require("firebase-admin/firestore");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Firebase Admin initialization
-const serviceAccount = require("./firebase-service-account.json");
+// Secure Firebase credentials from hosting environment
+let serviceAccount;
 
-initializeApp({
-  credential: cert(serviceAccount),
-});
+try {
+  const rawCredentials = process.env.FIREBASE_SERVICE_ACCOUNT;
+
+  if (!rawCredentials) {
+    throw new Error("FIREBASE_SERVICE_ACCOUNT is missing");
+  }
+
+  serviceAccount = JSON.parse(rawCredentials);
+
+  if (
+    !serviceAccount.project_id ||
+    !serviceAccount.client_email ||
+    !serviceAccount.private_key
+  ) {
+    throw new Error("Firebase service account credentials are incomplete");
+  }
+
+  serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, "\n");
+
+  if (getApps().length === 0) {
+    initializeApp({
+      credential: cert(serviceAccount),
+    });
+  }
+} catch (error) {
+  console.error("Firebase initialization failed:", error.message);
+  process.exit(1);
+}
 
 const db = getFirestore();
 
 app.use(cors());
 app.use(express.json({ limit: "1mb" }));
 
-// Basic server status
 app.get("/", (req, res) => {
   res.json({
     status: "running",
@@ -32,12 +56,10 @@ app.get("/", (req, res) => {
   });
 });
 
-// Health check
 app.get("/health", (req, res) => {
   res.json({ ok: true });
 });
 
-// Verify Firebase Authentication ID token
 async function verifyFirebaseToken(req, res, next) {
   const authHeader = req.headers.authorization || "";
 
@@ -58,12 +80,10 @@ async function verifyFirebaseToken(req, res, next) {
   }
 }
 
-// Only approved and active sellers may request upload credentials
 app.get("/auth", verifyFirebaseToken, async (req, res) => {
   try {
     const uid = req.user.uid;
 
-    // Seller document ID must match Firebase Authentication UID
     const sellerDoc = await db
       .collection("sellerProfiles")
       .doc(uid)
@@ -91,18 +111,12 @@ app.get("/auth", verifyFirebaseToken, async (req, res) => {
     const privateKey = process.env.IMAGEKIT_PRIVATE_KEY;
     const publicKey = process.env.IMAGEKIT_PUBLIC_KEY;
 
-    if (
-      !privateKey ||
-      !publicKey ||
-      privateKey === "your_private_key_here" ||
-      publicKey === "your_public_key_here"
-    ) {
+    if (!privateKey || !publicKey) {
       return res.status(500).json({
         error: "ImageKit keys are not configured",
       });
     }
 
-    // Generate temporary ImageKit upload authorization
     const token = crypto.randomUUID();
     const expire = Math.floor(Date.now() / 1000) + 30 * 60;
 
@@ -126,9 +140,7 @@ app.get("/auth", verifyFirebaseToken, async (req, res) => {
   }
 });
 
-// Local testing only. Hosting configuration will be handled later.
-app.listen(PORT, "127.0.0.1", () => {
-  console.log(
-    `ImageKit backend running at http://127.0.0.1:${PORT}`
-  );
+// Listen on the hosting platform's assigned port
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`MS Global ImageKit backend listening on port ${PORT}`);
 });
